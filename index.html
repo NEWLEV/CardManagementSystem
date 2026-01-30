@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://cdn.jsdelivr.net/npm/signature_pad@4.0.0/dist/signature_pad.umd.min.js"></script>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+
+<!-- Include the CSS from its own file -->
+<?!= include('style'); ?>
+
+</head>
+<body data-theme="light"> <!-- Default theme -->
+
+<!-- Top Header -->
+<div class="top-header">
+    <div class="top-header-left">
+        <div class="logo">CWC</div>
+        <h1 class="app-title">Card Management</h1>
+    </div>
+    <div class="top-header-right">
+        <div class="view-toggle-group" id="viewToggleGroup">
+          <button class="btn-toggle active" id="toggleSignatureView" onclick="showView('signature')"><i class="fas fa-signature"></i> Signature</button>
+          <button class="btn-toggle" id="toggleAdminView" onclick="showView('admin')"><i class="fas fa-user-shield"></i> Admin</button>
+        </div>
+        <div class="card-counts" id="cardCounts">
+          <span>Available:</span>
+          <div class="counts-container">
+            <div class="count-item">Loading...</div>
+          </div>
+        </div>
+        <button class="btn-header-icon btn-logout" id="adminLogoutBtn" onclick="logoutAdmin()" title="Logout Admin" style="display: none;">
+             <i class="fas fa-sign-out-alt"></i>
+        </button>
+        <button class="btn-header-icon" onclick="refreshAllData()" title="Refresh All Data & Clear Form">
+            <i class="fas fa-sync-alt"></i>
+        </button>
+        <button class="btn-header-icon" onclick="openAdminCodeModal()" title="Admin Access">
+            <i class="fas fa-user-shield"></i>
+        </button>
+        <div class="dark-mode-toggle" onclick="toggleDarkMode()" title="Toggle Dark/Light Mode">
+            <div class="toggle-slider">
+                <i id="darkModeIcon" class="fas fa-moon toggle-icon"></i>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Main Content Grid -->
+<div class="main-content-grid">
+    <!-- Overlays -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-content">
+         <div class="loading-spinner"></div>
+         <div class="loading-title">Processing Submission</div>
+         <div class="loading-message" id="loadingMessage">Saving data...</div>
+        </div>
+    </div>
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Left Column: Main Form -->
+    <div class="quadrant form-quadrant">
+      <div class="form-section">
+        <div class="form-row">
+            <div class="form-group">
+              <label for="dateInput" class="required">Date</label>
+              <input type="date" id="dateInput" name="dateInput" class="form-control" required> <!-- Added name -->
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="fullNameInput" class="required">Full Name</label>
+                <input type="text" id="fullNameInput" name="fullNameInput" class="form-control" placeholder="Enter full name" required oninput="this.value = this.value.toUpperCase()"> <!-- Added name -->
+            </div>
+            <div class="form-group">
+                <label for="prnInput" class="required">PRN</label>
+                <input type="text" id="prnInput" name="prnInput" class="form-control" placeholder="Enter PRN" required> <!-- Added name -->
+            </div>
+        </div>
+
+        <label class="required" style="font-weight: 600; margin-bottom: 10px;">Card Entries</label>
+        <div id="cardEntriesContainer">
+          <!-- Dynamic card rows injected here -->
+        </div>
+        <button type="button" class="btn-add-card" onclick="addCardEntryRow()"> <!-- Added type="button" -->
+          <i class="fas fa-plus"></i> Add Card
+        </button>
+
+        <div class="form-group" style="margin-bottom: 10px;">
+          <label for="noteInput" id="noteLabel">Note</label>
+          <input type="text" id="noteInput" name="noteInput" class="form-control" placeholder="Enter optional overall note"> <!-- Added name -->
+        </div>
+
+        <p class="ux-note">Note: No Cards for Samples.</p>
+
+        <div id="currentUserDisplay" class="current-user-display">
+            Logged in as: <span id="currentUserEmail">Loading...</span>
+        </div>
+
+        <div class="form-buttons-container">
+            <button type="button" class="btn btn-dist-info" onclick="openDistributionModal()"> <!-- Added type="button" -->
+                <i class="fas fa-info-circle"></i> Distribution Info
+            </button>
+            <button type="button" class="btn btn-dist-info" onclick="openHowToModal()"> <!-- Added type="button" -->
+                <i class="fas fa-question-circle"></i> How-To Use
+            </button>
+        </div>
+      </div> <!-- End Form Section -->
+    </div> <!-- End Left (Form) Quadrant -->
+
+    <!-- Right Column Wrapper -->
+    <div class="right-column">
+      <!-- Top-Right Quadrant: Signature -->
+      <div class="quadrant signature-quadrant" id="signatureQuadrant">
+        <h2 class="signature-title">
+          <i class="fas fa-signature"></i> Signature Panel
+        </h2>
+          <div class="signature-section">
+              <div class="form-group">
+                  <label for="signatureCanvas" id="signatureLabel" class="required">Recipient Signature</label>
+                  <canvas id="signatureCanvas"></canvas>
+              </div>
+
+              <div class="checkbox-container">
+                  <div class="special-checkbox" id="dropOffCheckbox" onclick="toggleCheckbox('dropOffInput')">
+                       <!-- Removed label wrapping input, using div onclick -->
+                      <input type="checkbox" id="dropOffInput" name="dropOffInput" onchange="event.stopPropagation(); handleDropOffChange()"> <!-- Added name -->
+                      <i class="fas fa-truck"></i>&nbsp; Drop-Off Mode
+                  </div>
+                  <div class="special-checkbox" id="safeHarborCheckbox" onclick="toggleCheckbox('safeHarborInput')">
+                       <!-- Removed label wrapping input, using div onclick -->
+                      <input type="checkbox" id="safeHarborInput" name="safeHarborInput" onchange="event.stopPropagation(); handleSafeHarborChange()"> <!-- Added name -->
+                      <i class="fas fa-shield-alt"></i>&nbsp; Safe Harbor
+                  </div>
+              </div>
+
+              <div class="button-group">
+                  <button type="button" class="btn btn-secondary" onclick="clearSignature()" id="clearBtn"> <!-- Added type="button" -->
+                      <i class="fas fa-eraser"></i> Clear Signature
+                  </button>
+                  <button type="button" class="btn btn-primary" onclick="submitEntry()" id="submitBtn"> <!-- Added type="button" -->
+                      <i class="fas fa-save"></i> Submit
+                  </button>
+              </div>
+          </div> <!-- End Signature Section -->
+      </div> <!-- End Top-Right (Signature) Quadrant -->
+
+      <!-- Top-Right Quadrant: Admin Panel (Toggled) -->
+      <div class="quadrant admin-panel" id="adminPanel">
+        <div class="admin-panel-header">
+            <h2><i class="fas fa-user-shield"></i> Admin Panel</h2>
+        </div>
+        <div class="admin-panel-body">
+          <div class="admin-section">
+            <div id="adminAddHeader" class="admin-section-header">
+                <span><i class="fas fa-plus-circle"></i> Add Cards to Inventory</span>
+                <i class="fas fa-chevron-down"></i>
+            </div>
+            <div class="admin-section-content">
+                <div class="form-group">
+                  <label for="adminAddCardTypeSelect" class="required">Card Type</label>
+                  <select id="adminAddCardTypeSelect" name="adminAddCardTypeSelect" class="form-control"> <!-- Added name -->
+                    <option value="">Select Type</option>
+                    <option value="McDonald's">McDonald's</option>
+                    <option value="Publix">Publix</option>
+                    <option value="Walmart">Walmart</option>
+                    <option value="Bus Pass">Bus Pass</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="adminCardNumbersTextarea" class="required">Card Numbers to Add</label>
+                  <textarea id="adminCardNumbersTextarea" name="adminCardNumbersTextarea" class="form-control" placeholder="Paste card numbers, one per line or separated by commas/spaces."></textarea> <!-- Added name -->
+                </div>
+                <button type="button" class="btn btn-primary" id="adminAddCardsBtn" onclick="addCards()"> <!-- Added type="button" -->
+                  <i class="fas fa-plus"></i> Add Cards
+                </button>
+                <div id="adminAddCardsResult" class="admin-result" style="display: none;"></div>
+            </div>
+          </div>
+
+          <div class="admin-section">
+            <div id="adminRemoveHeader" class="admin-section-header">
+                <span><i class="fas fa-trash-alt"></i> Remove Cards from Inventory</span>
+                <i class="fas fa-chevron-down"></i>
+            </div>
+            <div class="admin-section-content">
+                <div class="form-group">
+                  <label for="adminRemoveCardTypeSelect" class="required">Card Type</label>
+                  <select id="adminRemoveCardTypeSelect" name="adminRemoveCardTypeSelect" class="form-control"> <!-- Added name -->
+                    <option value="">Select Type</option>
+                    <option value="McDonald's">McDonald's</option>
+                    <option value="Publix">Publix</option>
+                    <option value="Walmart">Walmart</option>
+                    <option value="Bus Pass">Bus Pass</option>
+                  </select>
+                </div>
+                <div class="form-group">
+                  <label for="adminRemoveCardNumbersTextarea" class="required">Card Numbers to Remove</label>
+                  <textarea id="adminRemoveCardNumbersTextarea" name="adminRemoveCardNumbersTextarea" class="form-control" placeholder="Paste card numbers to remove."></textarea> <!-- Added name -->
+                </div>
+                <button type="button" class="btn btn-primary" id="adminRemoveCardsBtn" onclick="removeCards()"> <!-- Added type="button" -->
+                  <i class="fas fa-trash"></i> Remove Cards
+                </button>
+                <div id="adminRemoveCardsResult" class="admin-result" style="display: none;"></div>
+            </div>
+          </div>
+
+            <div class="admin-section">
+            <div id="adminListHeader" class="admin-section-header">
+                <span><i class="fas fa-list-alt"></i> List Available Inventory</span>
+                <i class="fas fa-chevron-down"></i>
+            </div>
+            <div class="admin-section-content">
+                <div class="form-group">
+                  <label for="adminListCardTypeSelect" class="required">Card Type</label>
+                  <select id="adminListCardTypeSelect" name="adminListCardTypeSelect" class="form-control"> <!-- Added name -->
+                    <option value="">Select Type</option>
+                    <option value="McDonald's">McDonald's</option>
+                    <option value="Publix">Publix</option>
+                    <option value="Walmart">Walmart</option>
+                    <option value="Bus Pass">Bus Pass</option>
+                  </select>
+                </div>
+                <button type="button" class="btn btn-secondary" id="adminListInventoryBtn" onclick="listInventory()"> <!-- Added type="button" -->
+                  <i class="fas fa-list"></i> List Inventory
+                </button>
+                <div class="form-group" style="margin-top: 15px;">
+                  <label for="adminListInventoryResultTextarea">Available (Unused) Inventory List</label>
+                  <textarea id="adminListInventoryResultTextarea" name="adminListInventoryResultTextarea" class="form-control" readonly></textarea> <!-- Added name -->
+                </div>
+            </div>
+          </div>
+        </div> <!-- End Admin Panel Body -->
+      </div> <!-- End Admin Panel Quadrant -->
+
+      <!-- Bottom-Right Quadrant: History (Always Visible) -->
+      <div class="quadrant history-quadrant">
+           <div class="history-header-bar">
+             <div class="history-title-area">
+                <h2 class="section-title">History</h2>
+                <div class="sort-buttons">
+                    <button type="button" class="btn-sort active" id="sortTimeDescBtn" onclick="applySort('timeDesc')"><i class="fas fa-clock"></i> Newest</button> <!-- Added type="button" -->
+                    <button type="button" class="btn-sort" id="sortTimeAscBtn" onclick="applySort('timeAsc')"><i class="fas fa-clock"></i> Oldest</button> <!-- Added type="button" -->
+                    <button type="button" class="btn-sort" id="sortNameAscBtn" onclick="applySort('nameAsc')"><i class="fas fa-sort-alpha-down"></i> A-Z</button> <!-- Added type="button" -->
+                    <button type="button" class="btn-sort" id="sortNameDescBtn" onclick="applySort('nameDesc')"><i class="fas fa-sort-alpha-up"></i> Z-A</button> <!-- Added type="button" -->
+                </div>
+             </div>
+             <div class="history-controls">
+               <select id="historyCardTypeFilterSelect" name="historyCardTypeFilterSelect" class="history-filter" onchange="applyFiltersNow()"> <!-- Added name -->
+                 <option value="">All Types</option>
+                 <option value="McDonald's">McDonald's</option>
+                 <option value="Publix">Publix</option>
+                 <option value="Walmart">Walmart</option>
+                 <option value="Bus Pass">Bus Pass</option>
+               </select>
+               <select id="historyReasonFilterSelect" name="historyReasonFilterSelect" class="history-filter" onchange="applyFiltersNow()"> <!-- Added name -->
+                 <option value="">All Reasons</option>
+                 <option value="Rapid">Rapid</option>
+                 <option value="Initial with Meds">Initial with Meds</option>
+                 <option value="Lab Review">Lab Review</option>
+                 <option value="Referral">Referral</option>
+                 <option value="Refill">Refill</option>
+                 <option value="2 for 1">2 for 1</option>
+                 <option value="Case Management">Case Management</option>
+                 <option value="Trash Assistance">Trash Assistance</option>
+                 <option value="Other">Other</option>
+               </select>
+               <div class="history-search">
+                 <i class="fas fa-search"></i>
+                 <input type="text" id="historySearchInputText" name="historySearchInputText" placeholder="Search..." oninput="debouncedApplyFilters()"> <!-- Added name -->
+               </div>
+               <button type="button" class="privacy-toggle" id="privacyToggleBtn" onclick="togglePrivacyBlur()"> <!-- Added type="button" -->
+                 <i class="fas fa-eye"></i>&nbsp;<span>Show</span>
+               </button>
+             </div>
+           </div>
+
+           <div id="historyLogContainer" class="privacy-blur" onclick="handleHistoryClick(event)">
+             <div class="history-empty" id="historyLogLoading">
+               <i class="fas fa-spinner fa-spin"></i> Loading app data...
+             </div>
+             <ul id="historyLogList">
+               <!-- History items injected here -->
+             </ul>
+           </div> <!-- End History Log Container -->
+      </div> <!-- End Bottom-Right (History) Quadrant -->
+
+    </div> <!-- END: Right Column Wrapper -->
+</div> <!-- END: Main Content Grid -->
+
+
+<!-- Templates and Modals -->
+<template id="cardEntryTemplate">
+     <div class="card-entry-row">
+    <div class="form-group" style="flex: 1.5;">
+      <!-- Labels will have 'for' updated by JS -->
+      <label class="required card-type-label">Card Type</label>
+      <!-- Inputs/Selects will have 'id' and 'name' updated by JS -->
+      <select class="form-control card-type-select" onchange="loadCardNumbers(this)" required>
+        <option value="">Select Type</option>
+        <option value="McDonald's">McDonald's</option>
+        <option value="Publix">Publix</option>
+        <option value="Walmart">Walmart</option>
+        <option value="Bus Pass">Bus Pass</option>
+      </select>
+    </div>
+    <div class="form-group" style="flex: 1.5;">
+      <label class="required card-number-label">Card Number
+        <span class="available-card-count"></span>
+      </label>
+      <select class="form-control card-number-select" onchange="handleCardSelectionChange(this)" required>
+        <option value="">Select Type First</option>
+      </select>
+    </div>
+    <div class="form-group" style="flex: 1.5;">
+      <label class="required reason-label">Reason</label>
+      <select class="form-control reason-select" onchange="handleReasonChange(this)" required>
+        <option value="">Select Reason</option>
+        <option value="Rapid">Rapid</option>
+        <option value="Initial with Meds">Initial with Meds</option>
+        <option value="Lab Review">Lab Review</option>
+        <option value="Referral">Referral</option>
+        <option value="Refill">Refill</option>
+        <option value="2 for 1">2 for 1</option>
+        <option value="Case Management">Case Management</option>
+        <option value="Trash Assistance">Trash Assistance</option>
+        <option value="Other">Other</option>
+      </select>
+    </div>
+    <div class="form-group approval-code-group" style="flex: 1;">
+      <label class="required approval-code-label">Approval Code</label>
+      <input type="password" class="form-control approval-code-input" placeholder="Code">
+    </div>
+    <button type="button" class="btn-remove-card" onclick="removeCardEntryRow(this)" title="Remove Card"> <!-- Added type="button" -->
+      <i class="fas fa-times"></i>
+    </button>
+  </div>
+</template>
+
+<!-- Modals remain largely unchanged -->
+<div class="modal-overlay" id="distributionModal" onclick="closeModal('distributionModal')">
+     <div class="modal-content" onclick="event.stopPropagation()">
+        <div class="modal-header">
+            <h2 class="modal-title"><i class="fas fa-info-circle"></i> Card Distribution</h2>
+            <button class="modal-close-btn" onclick="closeModal('distributionModal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <table class="distribution-table">
+                <thead> <tr> <th>Service Provided</th> <th>Total Cards</th> <th>Type of Card(s)</th> </tr> </thead>
+                <tbody>
+                    <tr><td>Rapid ONLY</td><td>1</td><td>McDonalds</td></tr>
+                    <tr><td>Initial Visit with Meds</td><td>2</td><td>1 McDonald's and 1 of Their Choice</td></tr>
+                    <tr><td>Lab Review</td><td>1</td><td>Their Choice</td></tr>
+                    <tr><td>Referral</td><td>1</td><td>Their Choice</td></tr>
+                    <tr><td>Med Pick-up or Drop-off</td><td>3</td><td>Their Choice</td></tr>
+                    <tr><td>Pickup Previous Meds (Any Quantity)</td><td>1</td><td>Their Choice</td></tr>
+                    <tr><td>2 for 1</td><td>3</td><td>Their Choice</td></tr>
+                    <tr><td>Case Management</td><td>2</td><td>1 of Their Choice and 1 Bus Pass</td></tr>
+                    <tr><td>Discretionary</td><td>1</td><td>Their Choice</td></tr>
+                </tbody>
+            </table>
+        </div>
+     </div>
+</div>
+
+<div class="modal-overlay" id="signatureModal" onclick="closeModal('signatureModal')">
+     <div class="modal-content" onclick="event.stopPropagation()">
+        <div class="modal-header">
+            <h2 class="modal-title">View Signature Record</h2>
+            <button class="modal-close-btn" onclick="closeModal('signatureModal')">&times;</button>
+        </div>
+        <div class="modal-body" id="signatureModalBodyContainer">
+            <div id="signatureModalBody">
+                <div id="signatureLoadingIndicator" style="display: none;"> <div class="loading-spinner"></div> <p>Loading Record...</p> </div>
+                <ul class="record-details-list" id="signatureRecordDetails" style="display: none;"> <!-- Details injected here by JS --> </ul>
+                <img id="signatureModalImage" src="" alt="Signature Image" style="display: none;">
+                <p id="signatureModalStatus" style="display: none;"></p>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button type="button" class="btn btn-primary" id="downloadPdfBtn" onclick="downloadSignaturePDF(this)"> <i class="fas fa-download"></i> Download as PDF </button> <!-- Added type="button" -->
+        </div>
+     </div>
+</div>
+
+<div class="modal-overlay" id="howToModal" onclick="closeModal('howToModal')">
+     <div class="modal-content" onclick="event.stopPropagation()">
+        <div class="modal-header">
+            <h2 class="modal-title"><i class="fas fa-question-circle"></i> How-To Use This App</h2>
+            <button class="modal-close-btn" onclick="closeModal('howToModal')">&times;</button>
+        </div>
+        <div class="modal-body" id="howToModalBody">
+             <h3><i class="fas fa-user-edit"></i> 1. Standard Submission</h3> <ol> <li>Fill in <strong>Date</strong>, <strong>Full Name</strong>, and <strong>PRN</strong>.</li> <li>Click <strong>Add Card</strong>.</li> <li>Select <strong>Card Type</strong>.</li> <li>Select <strong>Card Number</strong>.</li> <li>Select <strong>Reason</strong>. <ul> <li>If <code>Referral</code> or <code>Other</code> selected, <strong>Note</strong> field becomes required; fill it out.</li> <li>If <code>Other</code> selected, also enter <strong>Approval Code</strong> in card row.</li> </ul> </li> <li>Add more cards via <strong>Add Card</strong> button.</li> <li>Have recipient sign in <strong>Signature Panel</strong>.</li> <li>Click <strong>Submit</strong>.</li> </ol>
+            <h3><i class="fas fa-truck"></i> 2. Special Modes (No Signature)</h3> <ul> <li><strong>Drop-Off Mode:</strong> Check if dropping off without recipient. Signature disabled.</li> <li><strong>Safe Harbor:</strong> Check for "Safe Harbor" distributions. Signature disabled.</li> <li>Cannot select both modes.</li> </ul>
+            <h3><i class="fas fa-history"></i> 3. History Panel</h3> <ul> <li>Shows recent submissions.</li> <li>Use <strong>Sort</strong>, <strong>Filter</strong>, or <strong>Search</strong>.</li> <li><strong>Privacy:</strong> Names blurred by default. Click <strong>Show</strong> button or a name to toggle.</li> <li>Click <strong>View Sig/Details</strong> to see record, signature/status, and download PDF.</li> </ul>
+            <h3><i class="fas fa-user-shield"></i> 4. Admin Access</h3> <ul> <li>Click <strong>Admin Access</strong> button (<i class="fas fa-user-shield"></i>) in header.</li> <li>Enter code to unlock <strong>Admin Panel</strong> view.</li> <li>Admin Panel allows: <ul> <li><strong>Add Cards</strong></li> <li><strong>Remove Cards</strong></li> <li><strong>List Available Inventory</strong></li> </ul> </li> <li>Click <strong>Admin Logout</strong> button (<i class="fas fa-sign-out-alt"></i>) in header to exit.</li> </ul>
+        </div>
+     </div>
+</div>
+
+<div class="modal-overlay" id="adminCodeModal" onclick="closeModal('adminCodeModal')">
+     <div class="modal-content" onclick="event.stopPropagation()">
+        <div class="modal-header">
+            <h2 class="modal-title"><i class="fas fa-user-shield"></i> Admin Access</h2>
+            <button class="modal-close-btn" onclick="closeModal('adminCodeModal')">&times;</button>
+        </div>
+        <div class="modal-body">
+            <p>Please enter the administrator code to unlock the Admin Panel.</p>
+            <div class="form-group">
+                <label for="adminCodeInputField" class="required">Admin Code</label>
+                <input type="password" id="adminCodeInputField" name="adminCodeInputField" class="form-control" placeholder="Enter code"> <!-- Added name -->
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button type="button" class="btn btn-primary" onclick="submitAdminCode()"> <i class="fas fa-lock-open"></i> Unlock </button> <!-- Added type="button" -->
+        </div>
+     </div>
+</div>
+
+<!-- Include the JavaScript from its own file -->
+<?!= include('script'); ?>
+
+</body>
+</html>
+
