@@ -1,0 +1,733 @@
+<script>
+  let signaturePad;
+  let isDropOffMode = false;
+  let isSafeHarborMode = false;
+  let cardCache = {};
+  let currentHistoryItems = [];
+  let currentSort = 'timeDesc';
+  let currentSearchTerm = '';
+  let currentCardTypeFilter = '';
+  let currentReasonFilter = '';
+  let filterDebounceTimeout;
+  let temporarilyUnblurredElement = null;
+  let currentSignatureEntryId = null;
+  let currentUserEmail = 'Loading...';
+  let cardRowCounter = 0; // Counter for unique card row IDs
+
+  // --- Utility Functions ---
+  function showLoading(message = 'Processing Submission', isSignature = false) {
+    if (isSignature) {
+        const modalBody = document.getElementById('signatureModalBody'); // Ensure this ID exists
+        const detailsList = document.getElementById('signatureRecordDetails');
+        const img = document.getElementById('signatureModalImage');
+        const status = document.getElementById('signatureModalStatus');
+        const loading = document.getElementById('signatureLoadingIndicator');
+        const pdfBtn = document.getElementById('downloadPdfBtn');
+
+        if (detailsList && img && status && loading && pdfBtn) { // Check all required elements
+            detailsList.style.display = 'none';
+            img.style.display = 'none';
+            status.style.display = 'none';
+            pdfBtn.disabled = true;
+            loading.style.display = 'block';
+            openModal('signatureModal'); // Open after setting up loading state
+        } else {
+             console.error("One or more elements for signature modal loading state not found.");
+        }
+    } else {
+        const loadingMessage = document.getElementById('loadingMessage');
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const submitBtn = document.getElementById('submitBtn');
+        if (loadingMessage) loadingMessage.textContent = message;
+        if (loadingOverlay) loadingOverlay.style.display = 'flex';
+        if (submitBtn) submitBtn.disabled = true; // Disable submit during general loading
+    }
+  }
+  function hideLoading(isSignature = false) {
+     if (isSignature) {
+        const loading = document.getElementById('signatureLoadingIndicator');
+        const pdfBtn = document.getElementById('downloadPdfBtn');
+        if(loading) loading.style.display = 'none';
+        if(pdfBtn) pdfBtn.disabled = false; // Re-enable PDF button
+     } else {
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const submitBtn = document.getElementById('submitBtn');
+        if (loadingOverlay) loadingOverlay.style.display = 'none';
+        if (submitBtn) submitBtn.disabled = false; // Re-enable submit button
+     }
+  }
+  function showToast(message, type = 'info') {
+    const toastContainer = document.getElementById('toastContainer');
+    if (!toastContainer) { console.error("Toast container not found"); return; }
+    const existingToasts = toastContainer.querySelectorAll('.toast');
+    let msgExists = false;
+    existingToasts.forEach(toast => { if (toast.textContent?.includes(message)) msgExists = true; });
+    if (msgExists) return;
+
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    let icon = type === 'success'?'check-circle':(type==='error'?'exclamation-circle':(type==='warning'?'exclamation-triangle':'info-circle'));
+    toast.innerHTML = `<i class="fas fa-${icon}"></i> ${escapeHtml(message)}`;
+    toastContainer.appendChild(toast);
+    setTimeout(() => { toast.remove(); }, 3000);
+  }
+  function setDefaultDate() {
+    const today = new Date().toISOString().split('T')[0];
+    const dateInput = document.getElementById('dateInput');
+    if (dateInput) dateInput.value = today;
+  }
+  function escapeHtml(unsafe) {
+        const str = String(unsafe ?? ""); // Use nullish coalescing for null/undefined
+        return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+  }
+  function debounce(func, delay) {
+    let timeoutId;
+    return (...args) => { clearTimeout(timeoutId); timeoutId = setTimeout(() => { func.apply(this, args); }, delay); };
+  }
+
+
+  // --- View Toggling & Admin State ---
+   function showView(viewName) {
+    const sigQuadrant = document.getElementById('signatureQuadrant');
+    const adminPanel = document.getElementById('adminPanel');
+    const sigToggle = document.getElementById('toggleSignatureView');
+    const adminToggle = document.getElementById('toggleAdminView');
+    const logoutBtn = document.getElementById('adminLogoutBtn');
+
+    if (viewName === 'admin') {
+      if(sigQuadrant) sigQuadrant.style.display = 'none';
+      if(adminPanel) adminPanel.style.display = 'flex';
+      if(sigToggle) sigToggle.classList.remove('active');
+      if(adminToggle) adminToggle.classList.add('active');
+      if(logoutBtn) logoutBtn.style.display = 'flex';
+
+      document.querySelectorAll('.admin-section-content.active').forEach(content => { // Ensure correct selector
+          content.classList.remove('active'); content.style.display = 'none';
+          const header = content.previousElementSibling;
+          if (header?.classList.contains('admin-section-header')) { // Use optional chaining
+            header.classList.remove('active');
+            header.querySelector('.fas')?.classList.replace('fa-chevron-up', 'fa-chevron-down'); // Use optional chaining
+          }
+      });
+      clearAdminResults();
+    } else { // Default to signature view
+      if(sigQuadrant) sigQuadrant.style.display = 'flex';
+      if(adminPanel) adminPanel.style.display = 'none';
+      if(sigToggle) sigToggle.classList.add('active');
+      if(adminToggle) adminToggle.classList.remove('active');
+      if(logoutBtn) logoutBtn.style.display = 'none';
+    }
+  }
+
+  function logoutAdmin() {
+      document.getElementById('viewToggleGroup')?.setAttribute('style', 'display: none;'); // Use setAttribute for style
+      document.getElementById('adminLogoutBtn')?.setAttribute('style', 'display: none;');
+      showView('signature');
+      showToast("Admin access logged out.", "info");
+      clearAdminResults();
+  }
+
+
+  // --- Initialization ---
+  window.onload = function () {
+    try {
+        console.log("Window loaded. Starting initialization.");
+
+        loadDarkModePreference();
+        setDefaultDate();
+        console.log("Theme and date set.");
+
+        const canvas = document.getElementById('signatureCanvas');
+        if (!canvas) {
+            console.error("Signature canvas element not found!");
+            showToast("Error: Signature pad failed to load.", "error");
+            document.getElementById('clearBtn')?.setAttribute('disabled', 'true'); // Use setAttribute
+            document.getElementById('submitBtn')?.setAttribute('disabled', 'true');
+        } else {
+            console.log("Canvas found. Initializing SignaturePad.");
+            const currentTheme = document.body.getAttribute('data-theme') || 'light';
+            const initialPenColor = currentTheme === 'dark'
+                ? (getComputedStyle(document.documentElement).getPropertyValue('--pen-dark').trim() || '#FFFFFF')
+                : (getComputedStyle(document.documentElement).getPropertyValue('--pen-light').trim() || '#000000');
+            signaturePad = new SignaturePad(canvas, { penColor: initialPenColor });
+            let resizeTimeout;
+            const debouncedResize = () => { clearTimeout(resizeTimeout); resizeTimeout = setTimeout(resizeCanvas, 150); };
+            window.addEventListener('resize', debouncedResize);
+            setTimeout(resizeCanvas, 200); // Slight delay for layout stability
+             console.log("SignaturePad initialized.");
+        }
+
+        // Add initial card row *before* loading data
+        addCardEntryRow();
+        console.log("Initial card row added.");
+
+        // Attach listeners
+        document.querySelectorAll('.admin-section-header').forEach(header => {
+           if (!header.id) { header.id = 'adminHeader_' + Date.now() + Math.random().toString(16).substring(2); }
+           header.addEventListener('click', () => toggleAdminSection(header));
+        });
+        const fullNameInput = document.getElementById('fullNameInput');
+        if (fullNameInput) {
+            fullNameInput.addEventListener('input', function() {
+                const start = this.selectionStart, end = this.selectionEnd; // Simplify declaration
+                this.value = this.value.toUpperCase(); this.setSelectionRange(start, end);
+            });
+        }
+        const historyList = document.getElementById('historyLogList');
+        if (historyList) { historyList.addEventListener('click', handleHistoryClick); }
+        else { console.error("History list element not found!"); }
+        const privacyBtn = document.getElementById('privacyToggleBtn');
+        if (privacyBtn) {
+             const container = document.getElementById('historyLogContainer');
+             const icon = privacyBtn.querySelector('i'); const span = privacyBtn.querySelector('span');
+             if(icon && span && container) {
+                 const isBlurred = container.classList.contains('privacy-blur');
+                 icon.className = isBlurred ? 'fas fa-eye' : 'fas fa-eye-slash';
+                 span.textContent = isBlurred ? 'Show' : 'Hide';
+             }
+        } else { console.warn("Privacy toggle button not found."); }
+        console.log("Listeners attached.");
+
+        showView('signature');
+        console.log("Default view set.");
+
+        console.log("Initiating data load from server...");
+        loadInitialData();
+
+        console.log("Initialization complete.");
+
+    } catch (error) {
+        console.error("CRITICAL error during window.onload:", error.message, error.stack);
+        showToast("Error initializing application. Check console.", "error");
+        // Display a more user-friendly error overlay instead of replacing body
+        const errorDiv = document.createElement('div');
+        errorDiv.style.position = 'fixed';
+        errorDiv.style.top = '0';
+        errorDiv.style.left = '0';
+        errorDiv.style.width = '100%';
+        errorDiv.style.height = '100%';
+        errorDiv.style.backgroundColor = 'rgba(255, 255, 255, 0.9)';
+        errorDiv.style.color = 'red';
+        errorDiv.style.zIndex = '10001';
+        errorDiv.style.display = 'flex';
+        errorDiv.style.alignItems = 'center';
+        errorDiv.style.justifyContent = 'center';
+        errorDiv.style.textAlign = 'center';
+        errorDiv.innerHTML = `<div style="padding: 20px; border: 1px solid red; background: white;"><h2>Application Error</h2><p>Failed to load. Please check the browser console (F12) for details or contact support.</p><p><small>${escapeHtml(error.message)}</small></p></div>`;
+        document.body.appendChild(errorDiv);
+    }
+  };
+
+
+  // --- Resize Canvas ---
+   function resizeCanvas() {
+        const canvas = document.getElementById('signatureCanvas');
+        if (!canvas || !signaturePad) return;
+        if (canvas.offsetParent === null || canvas.clientWidth === 0) return;
+        try {
+            const ratio = Math.max(window.devicePixelRatio || 1, 1);
+            const data = signaturePad.isEmpty() ? null : signaturePad.toDataURL();
+            const width = canvas.clientWidth;
+            const computedHeight = parseInt(window.getComputedStyle(canvas).height, 10);
+            const height = computedHeight > 0 ? computedHeight : 150;
+            if (width <= 0 || height <= 0) { console.warn("Canvas zero dimensions."); return; }
+            canvas.width = width * ratio; canvas.height = height * ratio;
+            canvas.getContext("2d").scale(ratio, ratio);
+            signaturePad.clear();
+            if (data) { signaturePad.fromDataURL(data); }
+            updateSignatureModeUI(true);
+        } catch (e) { console.error("Error during resizeCanvas:", e.message, e.stack); }
+    }
+
+
+  // --- Data Loading, History, Counts ---
+  // [loadInitialData, refreshAllData, renderCardCounts, formatHistoryTime, renderHistory remain largely the same]
+  // Minor logging added/adjusted
+  function loadInitialData() {
+    const loadingEl = document.getElementById('historyLogLoading');
+    if (loadingEl) { loadingEl.style.display = 'block'; loadingEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Loading app data...'; }
+    const userEmailSpan = document.getElementById('currentUserEmail');
+    if (userEmailSpan) userEmailSpan.textContent = 'Loading...';
+
+    google.script.run
+      .withSuccessHandler(appData => {
+         console.log("Received appData:", appData); // Log received data
+        if (appData.error) {
+             showToast(`Server Error: ${appData.error}`, 'error'); console.error('Server error on initial load:', appData.error);
+             if (loadingEl) loadingEl.innerHTML = `<div class="history-empty" style="color:var(--danger)">Failed to load app data.</div>`;
+             if (userEmailSpan) userEmailSpan.textContent = 'Error'; return;
+        }
+        cardCache = appData.availableCards || {}; console.log("Card cache populated.");
+        renderCardCounts(appData.counts || {}); console.log("Card counts rendered.");
+        currentHistoryItems = appData.history || [];
+        if (loadingEl) loadingEl.style.display = 'none';
+        renderHistory(); console.log("History rendered.");
+        currentUserEmail = appData.userEmail || 'Unknown';
+        if (userEmailSpan) userEmailSpan.textContent = escapeHtml(currentUserEmail); console.log("User email displayed.");
+        refreshAllCardDropdowns(); console.log("Card dropdowns refreshed.");
+      })
+      .withFailureHandler(error => {
+        if (loadingEl) loadingEl.style.display = 'none';
+        const listEl = document.getElementById('historyLogList');
+        if (listEl) listEl.innerHTML = `<div class="history-empty" style="color:var(--danger)">Failed to load app data. Check console.</div>`;
+        if (userEmailSpan) userEmailSpan.textContent = 'Error';
+        showToast(`Failed to load app data: ${error.message}`, 'error'); console.error('App Data Load Error:', error);
+      })
+      .getAppData();
+  }
+
+  function refreshAllData() {
+    showToast("Refreshing all data & clearing form...", "info");
+    clearFullForm(); // Clears form, cards, signature
+    cardCache = {}; currentHistoryItems = []; // Reset local data
+    const countsContainer = document.getElementById('cardCounts')?.querySelector('.counts-container');
+    if (countsContainer) countsContainer.innerHTML = `<div class="count-item">Loading...</div>`;
+    const loadingEl = document.getElementById('historyLogLoading');
+    const listEl = document.getElementById('historyLogList');
+    if (loadingEl) loadingEl.style.display = 'block';
+    if (listEl) listEl.innerHTML = '';
+    const userEmailSpan = document.getElementById('currentUserEmail');
+    if (userEmailSpan) userEmailSpan.textContent = 'Loading...';
+    loadInitialData(); // Reload all data
+  }
+
+  function renderCardCounts(counts) {
+    const countsContainer = document.getElementById('cardCounts')?.querySelector('.counts-container');
+    if (!countsContainer) return;
+    let html = '';
+    const cardTypes = Object.keys(cardCache || {}).sort(); // Use keys from cache
+    if (counts && typeof counts === 'object' && cardTypes.length > 0) {
+        cardTypes.forEach(type => {
+            const count = counts.hasOwnProperty(type) ? counts[type] : 0;
+            html += `<div class="count-item">${escapeHtml(type)}: ${count}</div>`;
+        });
+    } else { html = `<div class="count-item">N/A</div>`; }
+    countsContainer.innerHTML = html;
+  }
+
+  function formatHistoryTime(isoString) {
+    if (!isoString) return 'No Time';
+    try { const date = new Date(isoString); if (isNaN(date.getTime())) { console.warn("Invalid timestamp:", isoString); return 'Invalid Time'; } return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true }); }
+    catch (e) { console.error('Error formatting time:', e.message, isoString); return 'Error Time'; }
+  }
+
+  function renderHistory() {
+    const list = document.getElementById('historyLogList');
+    if (!list) return;
+    list.innerHTML = ''; let itemsToRender = [...currentHistoryItems];
+    if (currentCardTypeFilter) itemsToRender = itemsToRender.filter(item => item.type === currentCardTypeFilter);
+    if (currentReasonFilter) itemsToRender = itemsToRender.filter(item => item.reason === currentReasonFilter);
+    const searchTerm = (currentSearchTerm || '').toLowerCase().trim();
+    if (searchTerm) {
+      itemsToRender = itemsToRender.filter(item =>
+        (item.name?.toLowerCase().includes(searchTerm)) || (item.prn?.toLowerCase().includes(searchTerm)) || // Optional chaining
+        (item.type?.toLowerCase().includes(searchTerm)) || (item.cardNumber != null && String(item.cardNumber).toLowerCase().includes(searchTerm)) ||
+        (item.reason?.toLowerCase().includes(searchTerm)) || (item.note?.toLowerCase().includes(searchTerm))
+      );
+    }
+    itemsToRender.sort((a, b) => {
+      const getDate = (ts) => { try { const d=new Date(ts); return isNaN(d.getTime())?null:d; } catch(e){ return null; }};
+      switch (currentSort) {
+        case 'nameAsc': return (a.name||'').localeCompare(b.name||''); case 'nameDesc': return (b.name||'').localeCompare(a.name||'');
+        case 'timeAsc': const dA=getDate(a.timestamp),dB=getDate(b.timestamp); if(!dA&&!dB)return 0; if(!dA)return 1; if(!dB)return -1; return dA-dB;
+        case 'timeDesc': default: const dAD=getDate(a.timestamp),dBD=getDate(b.timestamp); if(!dAD&&!dBD)return 0; if(!dAD)return 1; if(!dBD)return -1; return dBD-dAD;
+      }
+    });
+    if (itemsToRender.length === 0) { list.innerHTML = `<div class="history-empty">${(currentSearchTerm||currentCardTypeFilter||currentReasonFilter)?"No entries match filters.":"No history entries."}</div>`; return; }
+    itemsToRender.forEach(item => {
+      const li = document.createElement('li'); li.className = 'history-item'; li.setAttribute('data-entry-id', item.entryId);
+      const itemTime = formatHistoryTime(item.timestamp);
+      const noteIndicatorHtml = item.note ? `<i class="fas fa-sticky-note note-indicator" title="${escapeHtml(item.note)}"></i>` : '';
+      const buttonText = item.signatureStatus ? 'View Details' : 'View Sig';
+      const viewSigButtonHtml = `<button type="button" class="btn-view-signature" data-entry-id="${item.entryId}">${buttonText}</button>`; // Added type="button"
+      li.innerHTML = `<div class="history-header"><div class="history-name">${escapeHtml(item.name)||'N/A'}</div><div class="history-time">${itemTime}</div></div><div class="history-details"><span>${escapeHtml(item.type)||'N/A'} (${escapeHtml(item.cardNumber)||'N/A'}) - <span class="history-reason">${escapeHtml(item.reason)||'N/A'}</span>${noteIndicatorHtml}</span>${viewSigButtonHtml}</div>`;
+      list.appendChild(li);
+    });
+  }
+
+  // --- Filters & Sorting ---
+   function applyFiltersNow() {
+    currentSearchTerm = document.getElementById('historySearchInputText')?.value || '';
+    currentCardTypeFilter = document.getElementById('historyCardTypeFilterSelect')?.value || '';
+    currentReasonFilter = document.getElementById('historyReasonFilterSelect')?.value || '';
+    renderHistory();
+  }
+  const debouncedApplyFilters = debounce(applyFiltersNow, 300);
+
+  function applySort(sortType) {
+    currentSort = sortType;
+    document.querySelectorAll('.btn-sort').forEach(btn => {
+         // More robust way to check active button
+         btn.classList.toggle('active', btn.id.toLowerCase().includes(sortType.toLowerCase()));
+    });
+    renderHistory();
+  }
+
+  // --- Privacy Blur ---
+  function togglePrivacyBlur() {
+    const container = document.getElementById('historyLogContainer'); const btn = document.getElementById('privacyToggleBtn'); if (!container || !btn) return;
+    const icon = btn.querySelector('i'); const span = btn.querySelector('span'); const isBlurred = container.classList.toggle('privacy-blur');
+    clearTemporaryUnblur();
+    if (icon && span) { icon.className = isBlurred ? 'fas fa-eye' : 'fas fa-eye-slash'; span.textContent = isBlurred ? 'Show' : 'Hide'; }
+  }
+  function clearTemporaryUnblur() { if (temporarilyUnblurredElement) { temporarilyUnblurredElement.classList.remove('unblurred'); temporarilyUnblurredElement = null; } }
+  document.body.addEventListener('click', (e) => { if (temporarilyUnblurredElement && !temporarilyUnblurredElement.contains(e.target)) clearTemporaryUnblur(); }, true);
+   function handleHistoryClick(event) {
+    const target = event.target;
+    // Use closest to handle clicks inside the button (like on the icon)
+    const viewButton = target.closest('.btn-view-signature');
+    if (viewButton) {
+        const id = viewButton.dataset.entryId; if (id) viewSignature(id); return;
+    }
+    const container = document.getElementById('historyLogContainer');
+    // Check if blurred name was clicked
+    if (container?.classList.contains('privacy-blur') && target?.classList.contains('history-name')) {
+        event.stopPropagation(); clearTemporaryUnblur(); target.classList.add('unblurred'); temporarilyUnblurredElement = target;
+    }
+    // Clear unblur if clicking elsewhere within the container, but not on the button
+    else if (container?.contains(target) && !viewButton) {
+        clearTemporaryUnblur();
+    }
+  }
+
+  // --- Signature Viewing & PDF ---
+   function viewSignature(entryId) {
+    console.log("Viewing signature/details for entryId:", entryId);
+    if (!entryId) { showToast("Error: Invalid Entry ID.", "error"); return; }
+    currentSignatureEntryId = entryId; showLoading('Loading Record...', true);
+    google.script.run.withSuccessHandler(displaySignatureModal).withFailureHandler(showSignatureError).getSignatureData(entryId);
+  }
+
+  function displaySignatureModal(data) {
+    console.log('Received data for signature modal:', data);
+    hideLoading(true);
+    const detailsList = document.getElementById('signatureRecordDetails'); const imgElement = document.getElementById('signatureModalImage'); const statusElement = document.getElementById('signatureModalStatus');
+    if (!detailsList || !imgElement || !statusElement) { console.error("Sig modal elements missing."); closeModal('signatureModal'); showToast("Error displaying details.", "error"); return; }
+    detailsList.innerHTML = ''; detailsList.style.display = 'none'; imgElement.style.display = 'none'; imgElement.removeAttribute('src'); statusElement.style.display = 'none'; statusElement.textContent = '';
+
+    if (data?.entryId) {
+        let detailsHtml = ''; let displayDate = 'N/A';
+        if (data.date) { try { displayDate = new Date(data.date).toLocaleDateString('en-US', { timeZone: 'UTC' }); } catch(e){} }
+        detailsHtml += `<li><strong>Name:</strong> <span>${escapeHtml(data.name) || 'N/A'}</span></li>`;
+        detailsHtml += `<li><strong>PRN:</strong> <span>${escapeHtml(data.prn) || 'N/A'}</span></li>`;
+        detailsHtml += `<li><strong>Date:</strong> <span>${escapeHtml(displayDate)}</span></li>`;
+        detailsHtml += `<li><strong>Card Type:</strong> <span>${escapeHtml(data.cardType) || 'N/A'}</span></li>`;
+        detailsHtml += `<li><strong>Card #:</strong> <span>${escapeHtml(data.cardNumber) || 'N/A'}</span></li>`;
+        detailsHtml += `<li><strong>Reason:</strong> <span>${escapeHtml(data.reason) || 'N/A'}</span></li>`;
+        detailsHtml += `<li><strong>Note:</strong> <span>${escapeHtml(data.note) || 'N/A'}</span></li>`;
+        detailsList.innerHTML = detailsHtml; detailsList.style.display = 'block';
+        const statusText = (data.signatureStatus || '').trim();
+        // Check for Base64 validity more carefully
+        const base64Regex = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+        const isValidBase64 = data.signatureBase64 && data.signatureBase64.length > 50 && base64Regex.test(data.signatureBase64);
+
+        if (isValidBase64 && !statusText) {
+            console.log('Displaying Base64 image.'); try { imgElement.src = "data:image/png;base64," + data.signatureBase64; imgElement.style.display = 'block'; statusElement.style.display = 'none'; }
+            catch (imgError) { console.error("Error setting image src:", imgError); statusElement.textContent = "Error displaying signature."; statusElement.style.display = 'block'; imgElement.style.display = 'none'; }
+        } else if (statusText) { console.log(`Displaying status: ${statusText}`); statusElement.textContent = `Status: ${statusText}`; statusElement.style.display = 'block'; imgElement.style.display = 'none'; }
+        else { console.log(`Fallback: No valid signature/status.`); statusElement.textContent = "(No Signature on File)"; statusElement.style.display = 'block'; imgElement.style.display = 'none'; }
+    } else { let msg = data === null ? "Entry not found." : "Record details could not be loaded."; console.warn("Invalid data for modal:", data); statusElement.textContent = msg; statusElement.style.display = 'block'; detailsList.style.display = 'none'; imgElement.style.display = 'none'; }
+    openModal('signatureModal');
+  }
+
+  function showSignatureError(error) {
+     hideLoading(true); const statusElement = document.getElementById('signatureModalStatus');
+     console.error("Server Error fetching signature data:", error);
+     if (statusElement) { statusElement.textContent = `Error loading record: ${error ? escapeHtml(error.message) : 'Unknown error'}`; statusElement.style.display = 'block'; statusElement.style.color = 'var(--danger)'; }
+     else { showToast(`Error loading record: ${error ? escapeHtml(error.message) : 'Unknown error'}`, "error"); }
+     document.getElementById('signatureRecordDetails')?.setAttribute('style', 'display: none;'); // Use setAttribute
+     document.getElementById('signatureModalImage')?.setAttribute('style', 'display: none;');
+     const modal = document.getElementById('signatureModal'); if (modal && !modal.classList.contains('visible')) openModal('signatureModal');
+  }
+
+  async function downloadSignaturePDF(button) {
+    if (!currentSignatureEntryId) { showToast("Error: No record ID for PDF.", "error"); return; }
+    if (button) { button.disabled = true; button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Generating...'; }
+    showLoading('Generating PDF...', false);
+    try {
+      google.script.run
+        .withSuccessHandler(base64PdfString => {
+          hideLoading(false); if (button) { button.disabled = false; button.innerHTML = '<i class="fas fa-download"></i> Download PDF'; }
+          if (!base64PdfString) { showToast("Error: Empty PDF data.", "error"); console.error("PDF Export empty."); return; }
+          let fileName = `Record_${currentSignatureEntryId.substring(0, 8)}.pdf`;
+          try {
+            const name = document.querySelector('#signatureRecordDetails li:nth-child(1) span')?.textContent.trim().replace(/[^a-zA-Z0-9]/g, '_');
+            const date = document.querySelector('#signatureRecordDetails li:nth-child(3) span')?.textContent.trim().replace(/\//g, '-');
+            if (name && date) fileName = `Record_${name}_${date}.pdf`;
+          } catch (e) {}
+          _downloadBase64File(base64PdfString, fileName, 'application/pdf'); showToast("PDF Download Started!", "success");
+        })
+        .withFailureHandler(error => { hideLoading(false); if (button) { button.disabled = false; button.innerHTML = '<i class="fas fa-download"></i> Download PDF'; } console.error("PDF Gen Error:", error); showToast(`PDF Error: ${error.message}`, "error"); })
+        .exportSignatureToPdf(currentSignatureEntryId);
+    } catch (error) { hideLoading(false); if (button) { button.disabled = false; button.innerHTML = '<i class="fas fa-download"></i> Download PDF'; } console.error("PDF Call Error:", error); showToast(`Client PDF Error: ${error.message}`, "error"); }
+  }
+
+  function _downloadBase64File(base64Data, fileName, mimeType) {
+    try {
+      const byteCharacters = atob(base64Data); const byteNumbers = new Array(byteCharacters.length);
+      for (let i=0; i<byteCharacters.length; i++) byteNumbers[i]=byteCharacters.charCodeAt(i);
+      const byteArray = new Uint8Array(byteNumbers); const blob = new Blob([byteArray],{type:mimeType});
+      const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = fileName;
+      document.body.appendChild(link); link.click(); document.body.removeChild(link); URL.revokeObjectURL(link.href);
+    } catch (e) { console.error("Download Error:", e.message, e.stack); showToast("Download failed.", "error"); }
+  }
+
+
+  // --- Dynamic Card Row Management (With Unique ID Fix) ---
+  function addCardEntryRow() {
+    const template = document.getElementById('cardEntryTemplate');
+    const container = document.getElementById('cardEntriesContainer');
+    if (!template || !container) { console.error("Template or container missing"); return; }
+
+    cardRowCounter++; // Use a simple counter for uniqueness within the session
+    const clone = template.content.cloneNode(true);
+    const newRow = clone.querySelector('.card-entry-row');
+    if (!newRow) { console.error("Cloned row element not found"); return; }
+
+    // Find elements and assign unique IDs/Fors
+    const elementsToUpdate = [
+        { selector: '.card-type-select', labelSelector: '.card-type-label', baseId: 'cardType' },
+        { selector: '.card-number-select', labelSelector: '.card-number-label', baseId: 'cardNumber' },
+        { selector: '.reason-select', labelSelector: '.reason-label', baseId: 'reason' },
+        { selector: '.approval-code-input', labelSelector: '.approval-code-label', baseId: 'approvalCode' }
+    ];
+
+    elementsToUpdate.forEach(item => {
+        const control = newRow.querySelector(item.selector);
+        const label = newRow.querySelector(item.labelSelector);
+        if (control && label) {
+            const uniqueId = `${item.baseId}_${cardRowCounter}`;
+            control.id = uniqueId;
+            control.name = uniqueId; // Add name attribute as well
+            label.htmlFor = uniqueId;
+        } else {
+            console.warn(`Could not find control or label for ${item.baseId} in row ${cardRowCounter}`);
+        }
+    });
+
+    container.appendChild(newRow); // Append the *modified* row
+    updateRemoveButtons();
+    updateNoteRequirement();
+    newRow.querySelector('.card-type-select')?.focus(); // Focus after appending
+    console.log(`Added card row ${cardRowCounter}`);
+  }
+
+  // [removeCardEntryRow, updateRemoveButtons, getSelectedCards remain the same]
+  function removeCardEntryRow(button) {
+    if (!button) return;
+    const rowToRemove = button.closest('.card-entry-row'); if (!rowToRemove) return;
+    const typeVal = rowToRemove.querySelector('.card-type-select')?.value; // Get value before removing
+    rowToRemove.remove();
+    updateRemoveButtons();
+    if (typeVal) refreshAllCardDropdowns(); // Refresh if a type might have been freed up
+    updateNoteRequirement();
+  }
+  function updateRemoveButtons() {
+    const rows = document.querySelectorAll('.card-entry-row');
+    rows.forEach(row => { row.querySelector('.btn-remove-card').style.display = rows.length <= 1 ? 'none' : 'flex'; });
+  }
+  function getSelectedCards(excludeRow = null) {
+    const selected = new Set();
+    document.querySelectorAll('.card-entry-row').forEach(row => {
+      if (row === excludeRow) return;
+      const type = row.querySelector('.card-type-select')?.value;
+      const number = row.querySelector('.card-number-select')?.value;
+      if (type && number) selected.add(`${type}|${number}`);
+    });
+    return selected;
+  }
+
+
+  // --- Card Number Dropdown Logic ---
+  // [loadCardNumbers, handleCardSelectionChange, refreshAllCardDropdowns remain the same]
+  async function loadCardNumbers(typeSelect) {
+    if (!typeSelect) return;
+    const cardType = typeSelect.value;
+    const currentRow = typeSelect.closest('.card-entry-row'); if (!currentRow) return;
+    const numberSelect = currentRow.querySelector('.card-number-select');
+    const countSpan = currentRow.querySelector('.available-card-count'); if (!numberSelect || !countSpan) return;
+    const currentNum = numberSelect.value;
+    numberSelect.innerHTML = !cardType ? '<option value="">Select Type First</option>' : '<option value="">Loading...</option>';
+    numberSelect.disabled = !cardType; countSpan.textContent = !cardType ? '' : '(Loading...)';
+    if (!cardType) return;
+    try {
+      const allAvailable = cardCache[cardType] || []; const selectedOthers = getSelectedCards(currentRow);
+      numberSelect.innerHTML = ''; let didReselect = false;
+      let optionsList = allAvailable.filter(c => !selectedOthers.has(`${cardType}|${c}`));
+      countSpan.textContent = `(${optionsList.length} available)`;
+      if (currentNum && allAvailable.includes(currentNum) && !optionsList.includes(currentNum)) optionsList.unshift(currentNum);
+      if (optionsList.length === 0) { numberSelect.innerHTML = '<option value="">No cards</option>'; countSpan.textContent = '(0 available)'; }
+      else { numberSelect.add(new Option('Select Card', '')); optionsList.forEach(c => { const isSel = c === currentNum; const opt = new Option(c, c, isSel, isSel); numberSelect.add(opt); if(isSel) didReselect = true; }); }
+      if (currentNum && !allAvailable.includes(currentNum)) { showToast(`Card ${currentNum} no longer in inventory.`, 'warning'); didReselect = false; }
+      if (!didReselect && optionsList.length > 0) { numberSelect.value = optionsList[0]; handleCardSelectionChange(numberSelect); }
+      else if (!didReselect) { numberSelect.selectedIndex = 0; if (currentNum) handleCardSelectionChange(numberSelect); }
+      numberSelect.disabled = false;
+    } catch (e) { console.error('Card Load Error:', e.message, e.stack); numberSelect.innerHTML = '<option value="">Error</option>'; countSpan.textContent = '(Error)'; numberSelect.disabled = false; showToast('Failed to load card numbers.', 'error'); }
+  }
+
+  function handleCardSelectionChange(changedNumberSelect) {
+    if (!changedNumberSelect) return;
+    refreshAllCardDropdowns(changedNumberSelect.closest('.card-entry-row'));
+    // REMOVED auto-add row
+  }
+
+  function refreshAllCardDropdowns(excludeRow = null) {
+    const selectedCards = getSelectedCards();
+    document.querySelectorAll('.card-entry-row').forEach(row => {
+      if (row === excludeRow) return;
+      const typeSelect = row.querySelector('.card-type-select'); if (!typeSelect || !typeSelect.value) return;
+      const cardType = typeSelect.value; const numberSelect = row.querySelector('.card-number-select');
+      const countSpan = row.querySelector('.available-card-count'); if (!numberSelect || !countSpan) return;
+      const currentNum = numberSelect.value; const fullList = cardCache[cardType] || [];
+      numberSelect.innerHTML = ''; let didReselect = false;
+      const filtered = fullList.filter(c => c === currentNum || !selectedCards.has(`${cardType}|${c}`));
+      countSpan.textContent = `(${filtered.length} available)`;
+      if (filtered.length === 0) { numberSelect.innerHTML = '<option value="">No cards</option>'; countSpan.textContent = '(0 available)'; }
+      else { numberSelect.add(new Option('Select Card', '')); filtered.forEach(c => { const isSel = c === currentNum; const opt = new Option(c, c, isSel, isSel); numberSelect.add(opt); if (isSel) didReselect = true; }); }
+      if (!didReselect && currentNum) { numberSelect.selectedIndex = 0; } else if (!didReselect) { numberSelect.selectedIndex = 0; }
+    });
+  }
+
+
+  // --- Reason & Note Logic ---
+  // [handleReasonChange, updateNoteRequirement remain the same]
+  function handleReasonChange(reasonSelect) {
+    if (!reasonSelect) return;
+    const row = reasonSelect.closest('.card-entry-row'); if (!row) return;
+    const approvalGroup = row.querySelector('.approval-code-group');
+    const approvalInput = row.querySelector('.approval-code-input');
+    if (approvalGroup) { approvalGroup.style.display = reasonSelect.value === 'Other' ? 'block' : 'none'; if (reasonSelect.value !== 'Other' && approvalInput) approvalInput.value = ''; }
+    updateNoteRequirement();
+  }
+
+  function updateNoteRequirement() {
+    const noteInput = document.getElementById('noteInput'); const noteLabel = document.getElementById('noteLabel'); if (!noteInput || !noteLabel) return;
+    let needsReferralNote = false; let needsOtherNote = false;
+    document.querySelectorAll('.card-entry-row .reason-select').forEach(sel => { if (sel.value === 'Referral') needsReferralNote = true; if (sel.value === 'Other') needsOtherNote = true; });
+    noteInput.required = false; noteLabel.classList.remove('required'); noteInput.placeholder = "Enter optional overall note";
+    if (needsReferralNote) { noteInput.placeholder = "REQUIRED: Provide Full Name and PRN for referring patient."; noteInput.required = true; noteLabel.classList.add('required'); }
+    else if (needsOtherNote) { noteInput.placeholder = "REQUIRED: Explain why Other reason is selected."; noteInput.required = true; noteLabel.classList.add('required'); }
+  }
+
+  // --- Drop-Off & Safe Harbor ---
+  // [toggleCheckbox, handleDropOffChange, handleSafeHarborChange, updateSignatureModeUI, drawTextOnCanvas remain the same]
+   function toggleCheckbox(checkboxId) {
+     const checkbox = document.getElementById(checkboxId); if (!checkbox) return;
+     checkbox.checked = !checkbox.checked;
+     if (checkboxId === 'dropOffInput') handleDropOffChange(); else if (checkboxId === 'safeHarborInput') handleSafeHarborChange();
+  }
+  function handleDropOffChange() {
+    isDropOffMode = document.getElementById('dropOffInput')?.checked || false;
+    if (isDropOffMode) { isSafeHarborMode = false; const safeIn = document.getElementById('safeHarborInput'); if (safeIn) safeIn.checked = false; document.getElementById('safeHarborCheckbox')?.classList.remove('active'); }
+    updateSignatureModeUI();
+  }
+  function handleSafeHarborChange() {
+    isSafeHarborMode = document.getElementById('safeHarborInput')?.checked || false;
+    if (isSafeHarborMode) { isDropOffMode = false; const dropIn = document.getElementById('dropOffInput'); if (dropIn) dropIn.checked = false; document.getElementById('dropOffCheckbox')?.classList.remove('active'); }
+    updateSignatureModeUI();
+  }
+  function updateSignatureModeUI(skipClear = false) {
+    const canvas = document.getElementById('signatureCanvas'); const label = document.getElementById('signatureLabel');
+    const dropDiv = document.getElementById('dropOffCheckbox'); const safeDiv = document.getElementById('safeHarborCheckbox');
+    if (!canvas || !label || !dropDiv || !safeDiv || !signaturePad) return;
+    const theme = document.body.getAttribute('data-theme') || 'light';
+    const primary = getComputedStyle(document.documentElement).getPropertyValue('--primary').trim();
+    const success = getComputedStyle(document.documentElement).getPropertyValue('--success').trim();
+    signaturePad.penColor = theme === 'dark' ? '#FFF' : '#000';
+    canvas.classList.remove('drop-off-mode', 'safe-harbor-mode'); dropDiv.classList.remove('active'); safeDiv.classList.remove('active');
+    if (isDropOffMode) dropDiv.classList.add('active'); if (isSafeHarborMode) safeDiv.classList.add('active');
+    if (!skipClear) signaturePad.clear();
+    if (isDropOffMode) { label.textContent = 'Sig (Drop-Off Mode)'; canvas.classList.add('drop-off-mode'); drawTextOnCanvas('DROP-OFF', primary); signaturePad.off(); }
+    else if (isSafeHarborMode) { label.textContent = 'Sig (Safe Harbor Mode)'; canvas.classList.add('safe-harbor-mode'); drawTextOnCanvas('SAFE HARBOR', success); signaturePad.off(); }
+    else { label.textContent = 'Recipient Signature'; if (!skipClear || signaturePad.isEmpty()) signaturePad.clear(); signaturePad.on(); }
+  }
+  function drawTextOnCanvas(text, color) {
+    const canvas = document.getElementById('signatureCanvas'); if (!canvas) return; const ctx = canvas.getContext('2d'); if (!ctx) return;
+    const cw = canvas.width; const ch = canvas.height; if (cw === 0 || ch === 0) return;
+    const ratio = Math.max(window.devicePixelRatio || 1, 1);
+    const lw = canvas.clientWidth; const lh = canvas.clientHeight > 0 ? canvas.clientHeight : 150; const fs = Math.min(30, lh / 4);
+    ctx.font = `bold ${fs}px Arial`; ctx.fillStyle = color; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.clearRect(0, 0, lw, lh); ctx.fillText(text, lw / 2, lh / 2);
+  }
+
+  // --- Form Actions ---
+  // [clearSignature, clearFullForm, clearName, refreshCardEntries, submitEntry remain largely the same]
+  function clearSignature() {
+    isDropOffMode = false; isSafeHarborMode = false; const dropIn = document.getElementById('dropOffInput'); const safeIn = document.getElementById('safeHarborInput');
+    if (dropIn) dropIn.checked = false; if (safeIn) safeIn.checked = false;
+    if (signaturePad) updateSignatureModeUI(); showToast('Signature cleared.', 'info');
+  }
+   function clearFullForm() {
+     // Use value = '' for inputs, reset selects, clear signature
+     document.getElementById('fullNameInput')?.setAttribute('value','');
+     document.getElementById('prnInput')?.setAttribute('value','');
+     document.getElementById('noteInput')?.setAttribute('value','');
+     setDefaultDate(); // Reset date
+     refreshCardEntries(); // Reset card entries
+     clearSignature(); // Clear signature and modes
+     updateNoteRequirement(); // Reset note requirement/placeholder
+     console.log("Full form cleared.");
+   }
+  function clearName() { document.getElementById('fullNameInput')?.setAttribute('value',''); document.getElementById('prnInput')?.setAttribute('value',''); }
+  function refreshCardEntries() { const c = document.getElementById('cardEntriesContainer'); if (c) { c.innerHTML = ''; addCardEntryRow(); console.log("Card entries refreshed."); }}
+
+  function submitEntry() {
+    const dateInput = document.getElementById('dateInput'); const nameInput = document.getElementById('fullNameInput'); const prnInput = document.getElementById('prnInput'); const noteInput = document.getElementById('noteInput');
+    if (!dateInput || !nameInput || !prnInput || !noteInput) { showToast('Form elements missing.', 'error'); return; }
+    const date = dateInput.value; const fullName = nameInput.value.trim(); const prn = prnInput.value.trim(); const note = noteInput.value.trim();
+    if (!date) { showToast('Select Date.', 'error'); dateInput.focus(); return; } if (!fullName) { showToast('Enter Full Name.', 'error'); nameInput.focus(); return; } if (!prn) { showToast('Enter PRN.', 'error'); prnInput.focus(); return; }
+    if (!isDropOffMode && !isSafeHarborMode && (!signaturePad || signaturePad.isEmpty())) { showToast('Provide Signature or select mode.', 'error'); return; }
+    const cardsArray = []; const cardRows = document.querySelectorAll('.card-entry-row'); let cardErr = null; let needsRefNote = false; let needsOthNote = false; const finalCards = new Set();
+    if (cardRows.length === 0) { showToast('Add card.', 'error'); return; } // Should not happen
+    cardRows.forEach((row, i) => {
+      if (cardErr) return; const typeSel = row.querySelector('.card-type-select'); const numSel = row.querySelector('.card-number-select'); const reasSel = row.querySelector('.reason-select'); const apprIn = row.querySelector('.approval-code-input');
+      if (!typeSel || !numSel || !reasSel || !apprIn) { cardErr = `Row #${i+1} structure error.`; return; }
+      const type = typeSel.value; const cardNum = numSel.value; const reason = reasSel.value; const apprCode = apprIn.value.trim();
+      if (!type || !cardNum || !reason) { cardErr = `Card #${i+1}: Select Type, Number, Reason.`; return; }
+      if (reason === 'Other') { needsOthNote = true; if (!apprCode) { cardErr = `Card #${i+1}: Approval Code required.`; return; } }
+      if (reason === 'Referral') { needsRefNote = true; }
+      const key = `${type}|${cardNum}`; if (finalCards.has(key)) { cardErr = `Card #${i+1}: Duplicate selection.`; return; } finalCards.add(key);
+      cardsArray.push({ type, cardNumber: cardNum, reason, approvalCode: apprCode });
+    });
+    if (cardErr) { showToast(cardErr, 'error'); return; }
+    if ((needsRefNote || needsOthNote) && !note) { showToast(`Note required for ${needsRefNote?'Referral':''}${needsRefNote&&needsOthNote?'/':''}${needsOthNote?'Other':''} reason.`, 'error'); noteInput.focus(); return; }
+    const data = { date, name: fullName, prn, note, signature: (isDropOffMode || isSafeHarborMode || !signaturePad) ? 'N/A' : signaturePad.toDataURL(), isDropOff: isDropOffMode, isSafeHarbor: isSafeHarborMode, cards: cardsArray };
+    console.log("Submitting:", data); showLoading();
+    google.script.run
+      .withSuccessHandler(res => {
+        hideLoading(); console.log("Submit Response:", res);
+        if (res?.status === "partial_success") { showToast(res.message || `Submitted partial entries.`, 'warning'); console.warn("Submit errors:", res.errors); }
+        else if (res?.status === "success") { showToast(`Submitted ${res.rows?.length || 0} entries!`, 'success'); }
+        else { showToast('Unexpected submit response.', 'warning'); console.warn("Unexpected format:", res); }
+        clearFullForm(); refreshAllData(); // Refresh data after any submission attempt
+      })
+      .withFailureHandler(err => { hideLoading(); console.error("Submit Error:", err); showToast(`Submit Error: ${err.message}`, 'error'); /* Optionally refresh on fail: refreshAllData(); */ })
+      .addSignatureEntry(data);
+  }
+
+
+  // --- Admin Panel ---
+  // [toggleAdminSection, clearAdminResults, addCards, removeCards, listInventory remain the same]
+  function toggleAdminSection(header) { if (!header) return; const content = header.nextElementSibling; const icon = header.querySelector('.fas'); if (!content?.classList.contains('admin-section-content')) return; document.querySelectorAll('.admin-section-header.active').forEach(ah => { if (ah !== header) { ah.classList.remove('active'); const ac = ah.nextElementSibling; if (ac) { ac.classList.remove('active'); ac.style.display = 'none'; } ah.querySelector('.fas')?.classList.replace('fa-chevron-up', 'fa-chevron-down'); } }); const isActive = content.classList.toggle('active'); header.classList.toggle('active', isActive); content.style.display = isActive ? 'block' : 'none'; if (icon) { icon.classList.toggle('fa-chevron-down', !isActive); icon.classList.toggle('fa-chevron-up', isActive); } }
+   function clearAdminResults() { document.querySelectorAll('.admin-result').forEach(r => { r.style.display = 'none'; r.innerHTML = ''; r.style.color = ''; }); const lr = document.getElementById('adminListInventoryResultTextarea'); if(lr) lr.value = ''; }
+  function addCards() { const typeSel = document.getElementById('adminAddCardTypeSelect'); const numIn = document.getElementById('adminCardNumbersTextarea'); const resDiv = document.getElementById('adminAddCardsResult'); const btn = document.getElementById('adminAddCardsBtn'); if (!typeSel||!numIn||!resDiv||!btn) return; const type = typeSel.value; const nums = numIn.value; if (!type||!nums.trim()) { showToast("Select type and enter numbers.", "error"); return; } btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Adding...'; clearAdminResults(); google.script.run .withSuccessHandler(res => { btn.disabled = false; btn.innerHTML = '<i class="fas fa-plus"></i> Add Cards'; console.log("Add Resp:", res); if (res?.success) { resDiv.style.color = 'var(--success)'; resDiv.innerHTML = `Added ${res.added}. (${res.duplicates} duplicates ignored.)`; showToast(`Added ${res.added} ${type} cards.`, 'success'); numIn.value = ''; refreshAllData(); } else { resDiv.style.color = res?.message ? 'var(--warning)' : 'var(--danger)'; resDiv.innerHTML = res?.message || res?.error || "Error."; showToast(res?.message || res?.error || "Error.", "error"); } resDiv.style.display = 'block'; }) .withFailureHandler(err => { btn.disabled = false; btn.innerHTML = '<i class="fas fa-plus"></i> Add Cards'; resDiv.style.color = 'var(--danger)'; resDiv.innerHTML = `Error: ${err?.message || 'Unknown'}`; resDiv.style.display = 'block'; showToast(err?.message || 'Error.', "error"); console.error("Add Fail:", err); }) .addCardsToInventory(type, nums); }
+  function removeCards() { const typeSel = document.getElementById('adminRemoveCardTypeSelect'); const numIn = document.getElementById('adminRemoveCardNumbersTextarea'); const resDiv = document.getElementById('adminRemoveCardsResult'); const btn = document.getElementById('adminRemoveCardsBtn'); if (!typeSel||!numIn||!resDiv||!btn) return; const type = typeSel.value; const nums = numIn.value; if (!type||!nums.trim()) { showToast("Select type and enter numbers.", "error"); return; } btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Removing...'; clearAdminResults(); google.script.run .withSuccessHandler(res => { btn.disabled = false; btn.innerHTML = '<i class="fas fa-trash"></i> Remove Cards'; console.log("Remove Resp:", res); if (res?.success) { resDiv.style.color = 'var(--success)'; resDiv.innerHTML = `Removed ${res.removed}. (${res.notFound} not found.)`; showToast(`Removed ${res.removed} ${type} cards.`, 'success'); numIn.value = ''; refreshAllData(); } else { resDiv.style.color = res?.message ? 'var(--warning)' : 'var(--danger)'; resDiv.innerHTML = res?.message || res?.error || "Error."; showToast(res?.message || res?.error || "Error.", "error"); } resDiv.style.display = 'block'; }) .withFailureHandler(err => { btn.disabled = false; btn.innerHTML = '<i class="fas fa-trash"></i> Remove'; resDiv.style.color = 'var(--danger)'; resDiv.innerHTML = `Error: ${err?.message || 'Unknown'}`; resDiv.style.display = 'block'; showToast(err?.message || 'Error.', "error"); console.error("Remove Fail:", err); }) .removeCardsFromInventory(type, nums); }
+  function listInventory() { const typeSel = document.getElementById('adminListCardTypeSelect'); const resArea = document.getElementById('adminListInventoryResultTextarea'); const btn = document.getElementById('adminListInventoryBtn'); if (!typeSel||!resArea||!btn) return; const type = typeSel.value; if (!type) { showToast("Select type.", "error"); return; } btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Listing...'; clearAdminResults(); resArea.value = 'Loading...'; google.script.run .withSuccessHandler(list => { btn.disabled = false; btn.innerHTML = '<i class="fas fa-list"></i> List Inventory'; console.log(`List Resp (${type}):`, list); if (Array.isArray(list)) { resArea.value = list.length === 0 ? `No available "${escapeHtml(type)}" cards.` : list.join('\n'); showToast(`Listed ${list.length} available ${type} cards.`, 'info'); } else { resArea.value = "Invalid data."; showToast("Invalid list format.", "error"); } }) .withFailureHandler(err => { btn.disabled = false; btn.innerHTML = '<i class="fas fa-list"></i> List Inventory'; resArea.value = `Error: ${err?.message || 'Unknown'}`; showToast(err?.message || 'List Error.', "error"); console.error("List Fail:", err); }) .getAvailableCardNumbers(type); }
+
+
+  // --- Dark Mode ---
+  // [toggleDarkMode, setTheme, loadDarkModePreference remain the same]
+   function toggleDarkMode() { const newTheme = (document.body.getAttribute('data-theme')||'light') === 'dark' ? 'light' : 'dark'; setTheme(newTheme); }
+    function setTheme(theme) { document.body.setAttribute('data-theme', theme); localStorage.setItem('theme', theme); const icon = document.getElementById('darkModeIcon'); if (icon) icon.className = theme === 'dark' ? 'fas fa-sun toggle-icon' : 'fas fa-moon toggle-icon'; if (signaturePad) { signaturePad.penColor = theme === 'dark' ? '#FFF' : '#000'; if (isDropOffMode||isSafeHarborMode) updateSignatureModeUI(true); } }
+    function loadDarkModePreference() { setTheme(localStorage.getItem('theme') || 'light'); }
+
+
+  // --- Modals ---
+  // [openModal, closeModal, openDistributionModal, openHowToModal, openAdminCodeModal, submitAdminCode remain the same]
+   function openModal(id) { const m = document.getElementById(id); if(m) m.classList.add('visible'); else console.error("Modal missing:", id); }
+  function closeModal(id) { const m = document.getElementById(id); if(m) { m.classList.remove('visible'); if (id==='signatureModal') { document.getElementById('signatureRecordDetails')?.setAttribute('innerHtml', ''); document.getElementById('signatureModalImage')?.removeAttribute('src'); document.getElementById('signatureModalStatus')?.setAttribute('textContent',''); document.getElementById('signatureLoadingIndicator').style.display = 'none'; currentSignatureEntryId = null; } if (id==='adminCodeModal') { document.getElementById('adminCodeInputField')?.setAttribute('value', ''); m.querySelector(".btn-primary").disabled = false; m.querySelector(".btn-primary").innerHTML = '<i class="fas fa-lock-open"></i> Unlock'; } } }
+  function openDistributionModal() { openModal('distributionModal'); } function openHowToModal() { openModal('howToModal'); } function openAdminCodeModal() { openModal('adminCodeModal'); }
+  function submitAdminCode() { const input = document.getElementById('adminCodeInputField'); if (!input) return; const code = input.value; if (!code) { showToast("Enter code.", "warning"); input.focus(); return; } const btn = document.querySelector("#adminCodeModal .btn-primary"); if(btn) { btn.disabled = true; btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Unlocking...'; } google.script.run .withSuccessHandler(res => { if(btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-lock-open"></i> Unlock'; } if (res === true) { showToast("Admin access granted!", "success"); closeModal('adminCodeModal'); document.getElementById('viewToggleGroup')?.setAttribute('style', 'display: flex;'); document.getElementById('adminLogoutBtn')?.setAttribute('style', 'display: flex;'); showView('admin'); } else { showToast("Invalid code.", "error"); input.focus(); input.select(); } }) .withFailureHandler(err => { if(btn) { btn.disabled = false; btn.innerHTML = '<i class="fas fa-lock-open"></i> Unlock'; } showToast(`Code Check Error: ${err.message}`, "error"); console.error("Admin Code Check Error:", err); }) .checkAdminCode(code); }
+
+</script>
+
